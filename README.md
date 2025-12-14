@@ -1,154 +1,90 @@
-# JSON API - Simple JSON Storage API with Dashboard
+# JSON API - Simple JSON Storage API
 
-A lightweight Go API for storing and serving JSON data, with a beautiful modern dashboard for management. Perfect for static websites, prototypes, or any application that needs simple JSON storage.
+A lightweight Go API for storing and serving JSON data, with a Next.js dashboard for management.
 
-## 🚀 Features
-
-- **RESTful API** - CRUD operations for JSON documents
-- **API Key Authentication** - Secure your data with a simple API key
-- **Public Endpoints** - Share read-only access to your data
-- **Modern Dashboard** - Beautiful dark-themed UI to manage your data
-- **Render.com Ready** - Deploy in minutes with included configuration
-- **Persistent Storage** - Data stored as JSON files with optional disk persistence
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 json-api/
-├── backend/
-│   ├── main.go           # Go API server
-│   ├── go.mod            # Go module definition
-│   ├── Dockerfile        # Docker configuration
-│   └── render.yaml       # Render.com deployment config
-├── frontend/
-│   ├── index.html        # Dashboard HTML
-│   ├── styles.css        # Modern CSS styling
-│   └── app.js           # Dashboard JavaScript
-└── README.md
+├── backend/          # Go API (Deploy to Render)
+│   ├── main.go
+│   ├── go.mod
+│   ├── Dockerfile
+│   └── render.yaml
+└── frontend/         # Next.js Dashboard (Deploy to Vercel)
+    └── src/app/
+        └── page.tsx
 ```
 
-## 🛠️ Quick Start
+## Features
 
-### Running Locally
+- RESTful API for JSON document CRUD operations
+- API Key authentication
+- Public read-only endpoints for websites
+- Clean, Supabase-inspired dashboard
 
-1. **Start the API Server:**
-   ```bash
-   cd backend
-   go mod tidy
-   API_KEY=your-secret-key go run main.go
-   ```
+## API Endpoints
 
-2. **Open the Dashboard:**
-   - Open `frontend/index.html` in your browser
-   - Enter `http://localhost:8080` as the API URL
-   - Enter your API key
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/health` | No | Health check |
+| GET | `/api/documents` | Yes | List all documents |
+| POST | `/api/documents` | Yes | Create document |
+| GET | `/api/documents/:id` | Yes | Get document |
+| PUT | `/api/documents/:id` | Yes | Update document |
+| DELETE | `/api/documents/:id` | Yes | Delete document |
+| GET | `/public/:id` | No | Public read access |
 
-### Environment Variables
+## Deployment
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | 8080 | Server port |
-| `API_KEY` | your-secret-api-key-change-me | API authentication key |
-| `DATA_DIR` | ./data | Directory for storing JSON files |
-| `ALLOWED_ORIGINS` | * | CORS allowed origins |
+### Backend (Render.com)
 
-## 🌐 Deploy to Render.com
-
-### Backend Deployment
-
-1. Push this repository to GitHub
-2. Create a new **Web Service** on Render
-3. Connect your repository
-4. Configure settings:
+1. Create a new **Web Service** on Render
+2. Connect your GitHub repository
+3. Configure:
    - **Root Directory**: `backend`
    - **Runtime**: Docker
-5. Add environment variable:
-   - `API_KEY`: Your secret API key (generate a strong one!)
-6. Add a **Disk** for persistent storage:
+4. Add environment variable:
+   - `API_KEY`: Your secret API key
+5. Add a **Disk**:
    - **Mount Path**: `/app/data`
-   - **Size**: 1 GB (or more as needed)
+   - **Size**: 1 GB
 
-### Frontend Deployment
+### Frontend (Vercel)
 
-1. Create a new **Static Site** on Render
-2. Connect the same repository
-3. Configure settings:
+1. Import your GitHub repository on Vercel
+2. Configure:
    - **Root Directory**: `frontend`
-   - **Build Command**: (leave empty)
-   - **Publish Directory**: `.`
+   - **Framework Preset**: Next.js
+3. Add environment variable (optional):
+   - `NEXT_PUBLIC_API_URL`: Your Render backend URL
 
-## 📡 API Reference
+## Local Development
 
-### Authentication
-
-All `/api/*` endpoints require the `X-API-Key` header:
-```
-X-API-Key: your-api-key
-```
-
-### Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/documents` | List all documents |
-| POST | `/api/documents` | Create a document |
-| GET | `/api/documents/{id}` | Get a document |
-| PUT | `/api/documents/{id}` | Update a document |
-| DELETE | `/api/documents/{id}` | Delete a document |
-| GET | `/public/{id}` | Public read-only access |
-
-### Create Document
-
+### Backend
 ```bash
-curl -X POST "https://your-api.onrender.com/api/documents" \
-  -H "X-API-Key: your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "products",
-    "data": {
-      "items": [
-        {"id": 1, "name": "Widget", "price": 9.99}
-      ]
-    }
-  }'
+cd backend
+go mod tidy
+API_KEY=your-secret-key go run main.go
+# Server runs on http://localhost:8080
 ```
 
-### Response Format
-
-All API responses follow this format:
-```json
-{
-  "success": true,
-  "message": "Optional message",
-  "data": { },
-  "error": "Error message if success is false"
-}
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+# Dashboard runs on http://localhost:3000
 ```
 
-## 🌍 Using in Your Website
+## Using in Your Website
 
-Once you have documents created, use the public endpoint in your website:
-
-```html
-<script>
-  // Fetch your data (no API key needed for public access)
-  fetch('https://your-api.onrender.com/public/YOUR_DOCUMENT_ID')
-    .then(res => res.json())
-    .then(data => {
-      // Use your data
-      console.log(data);
-    });
-</script>
+```javascript
+// Fetch data from public endpoint (no auth needed)
+const response = await fetch('https://your-api.onrender.com/public/DOCUMENT_ID');
+const data = await response.json();
 ```
 
-## 🔒 Security Notes
+## License
 
-1. **Generate a strong API key** - Use a random string of at least 32 characters
-2. **Keep your API key secret** - Never expose it in frontend code
-3. **Use HTTPS** - Render.com provides free SSL
-4. **Set ALLOWED_ORIGINS** - Restrict to your domain in production
-
-## 📝 License
-
-MIT License - Feel free to use this project for any purpose.
+MIT

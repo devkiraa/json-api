@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Configuration
@@ -26,9 +28,19 @@ type Config struct {
 	AllowedOrigins []string
 }
 
+// User represents a user account
+type User struct {
+	ID        string    `json:"id" bson:"_id"`
+	Email     string    `json:"email" bson:"email"`
+	Password  string    `json:"-" bson:"password"`
+	APIKey    string    `json:"api_key" bson:"api_key"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+}
+
 // JSONDocument represents a stored JSON document
 type JSONDocument struct {
 	ID        string                 `json:"id" bson:"_id"`
+	UserID    string                 `json:"user_id" bson:"user_id"`
 	Name      string                 `json:"name" bson:"name"`
 	Data      map[string]interface{} `json:"data" bson:"data"`
 	CreatedAt time.Time              `json:"created_at" bson:"created_at"`
@@ -44,15 +56,19 @@ type APIResponse struct {
 }
 
 var (
-	config     Config
-	collection *mongo.Collection
-	ctx        = context.Background()
+	config          Config
+	docCollection   *mongo.Collection
+	usersCollection *mongo.Collection
+	ctx             = context.Background()
 )
 
 func init() {
+	// Load .env file
+	godotenv.Load()
+
 	config = Config{
 		Port:           getEnv("PORT", "8080"),
-		APIKey:         getEnv("API_KEY", "your-secret-api-key-change-me"),
+		APIKey:         getEnv("API_KEY", ""),
 		MongoURI:       getEnv("MONGODB_URI", "mongodb://localhost:27017"),
 		DatabaseName:   getEnv("DATABASE_NAME", "jsonapi"),
 		AllowedOrigins: strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
@@ -75,20 +91,27 @@ func main() {
 	}
 	defer client.Disconnect(ctx)
 
-	// Ping MongoDB
 	if err := client.Ping(ctx, nil); err != nil {
 		log.Fatalf("Failed to ping MongoDB: %v", err)
 	}
 	log.Println("Connected to MongoDB")
 
-	// Get collection
-	collection = client.Database(config.DatabaseName).Collection("documents")
+	db := client.Database(config.DatabaseName)
+	docCollection = db.Collection("documents")
+	usersCollection = db.Collection("users")
 
-	// Create index on name field
-	indexModel := mongo.IndexModel{
-		Keys: bson.D{{Key: "name", Value: 1}},
-	}
-	collection.Indexes().CreateOne(ctx, indexModel)
+	// Create indexes
+	docCollection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}},
+	})
+	usersCollection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "email", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	usersCollection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "api_key", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -96,31 +119,26 @@ func main() {
 	// Health check
 	mux.HandleFunc("/health", healthHandler)
 
+	// Auth routes
+	mux.HandleFunc("/auth/register", registerHandler)
+	mux.HandleFunc("/auth/login", loginHandler)
+
 	// API routes (protected)
 	mux.HandleFunc("/api/documents", authMiddleware(documentsHandler))
 	mux.HandleFunc("/api/documents/", authMiddleware(documentHandler))
+	mux.HandleFunc("/api/me", authMiddleware(meHandler))
 
 	// Public read endpoint
 	mux.HandleFunc("/public/", publicHandler)
 
-	// Wrap with CORS middleware
 	handler := corsMiddleware(mux)
 
-	// Start server
 	addr := fmt.Sprintf(":%s", config.Port)
 	log.Printf("JSON API Server starting on port %s", config.Port)
-	log.Printf("API Key configured: %s***", config.APIKey[:min(8, len(config.APIKey))])
 
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // CORS middleware
@@ -155,7 +173,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Auth middleware
+// Auth middleware - supports both API key and legacy global API key
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.Header.Get("X-API-Key")
@@ -163,32 +181,207 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			apiKey = r.URL.Query().Get("api_key")
 		}
 
-		if apiKey != config.APIKey {
+		if apiKey == "" {
 			sendJSON(w, http.StatusUnauthorized, APIResponse{
 				Success: false,
-				Error:   "Invalid or missing API key",
+				Error:   "API key is required",
 			})
 			return
 		}
 
+		// Check if it's the global API key (legacy support)
+		if config.APIKey != "" && apiKey == config.APIKey {
+			// Use global context
+			r = r.WithContext(context.WithValue(r.Context(), "user_id", "global"))
+			next(w, r)
+			return
+		}
+
+		// Check user API key
+		var user User
+		err := usersCollection.FindOne(ctx, bson.M{"api_key": apiKey}).Decode(&user)
+		if err != nil {
+			sendJSON(w, http.StatusUnauthorized, APIResponse{
+				Success: false,
+				Error:   "Invalid API key",
+			})
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), "user_id", user.ID))
+		r = r.WithContext(context.WithValue(r.Context(), "user", user))
 		next(w, r)
 	}
 }
 
-// Health check handler
+func getUserID(r *http.Request) string {
+	if userID, ok := r.Context().Value("user_id").(string); ok {
+		return userID
+	}
+	return ""
+}
+
+// Health handler
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "JSON API Server is running",
 		Data: map[string]interface{}{
-			"version":   "1.0.0",
+			"version":   "1.1.0",
 			"storage":   "mongodb",
+			"auth":      "email",
 			"timestamp": time.Now().UTC(),
 		},
 	})
 }
 
-// Documents handler (list all, create new)
+// Register handler
+func registerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
+		return
+	}
+
+	var input struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &input); err != nil {
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Invalid JSON"})
+		return
+	}
+
+	if input.Email == "" || input.Password == "" {
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Email and password are required"})
+		return
+	}
+
+	if len(input.Password) < 6 {
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Password must be at least 6 characters"})
+		return
+	}
+
+	// Check if email exists
+	var existing User
+	err := usersCollection.FindOne(ctx, bson.M{"email": strings.ToLower(input.Email)}).Decode(&existing)
+	if err == nil {
+		sendJSON(w, http.StatusConflict, APIResponse{Success: false, Error: "Email already registered"})
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to create account"})
+		return
+	}
+
+	// Create user
+	user := User{
+		ID:        uuid.New().String(),
+		Email:     strings.ToLower(input.Email),
+		Password:  string(hashedPassword),
+		APIKey:    uuid.New().String(),
+		CreatedAt: time.Now().UTC(),
+	}
+
+	_, err = usersCollection.InsertOne(ctx, user)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to create account"})
+		return
+	}
+
+	sendJSON(w, http.StatusCreated, APIResponse{
+		Success: true,
+		Message: "Account created successfully",
+		Data: map[string]interface{}{
+			"id":      user.ID,
+			"email":   user.Email,
+			"api_key": user.APIKey,
+		},
+	})
+}
+
+// Login handler
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
+		return
+	}
+
+	var input struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &input); err != nil {
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Invalid JSON"})
+		return
+	}
+
+	if input.Email == "" || input.Password == "" {
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Email and password are required"})
+		return
+	}
+
+	// Find user
+	var user User
+	err := usersCollection.FindOne(ctx, bson.M{"email": strings.ToLower(input.Email)}).Decode(&user)
+	if err != nil {
+		sendJSON(w, http.StatusUnauthorized, APIResponse{Success: false, Error: "Invalid email or password"})
+		return
+	}
+
+	// Check password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+		sendJSON(w, http.StatusUnauthorized, APIResponse{Success: false, Error: "Invalid email or password"})
+		return
+	}
+
+	sendJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Login successful",
+		Data: map[string]interface{}{
+			"id":      user.ID,
+			"email":   user.Email,
+			"api_key": user.APIKey,
+		},
+	})
+}
+
+// Me handler - get current user info
+func meHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
+		return
+	}
+
+	user, ok := r.Context().Value("user").(User)
+	if !ok {
+		sendJSON(w, http.StatusOK, APIResponse{
+			Success: true,
+			Data: map[string]interface{}{
+				"id":   "global",
+				"type": "api_key",
+			},
+		})
+		return
+	}
+
+	sendJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"id":      user.ID,
+			"email":   user.Email,
+			"api_key": user.APIKey,
+		},
+	})
+}
+
+// Documents handler
 func documentsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -196,23 +389,17 @@ func documentsHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		createDocument(w, r)
 	default:
-		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{
-			Success: false,
-			Error:   "Method not allowed",
-		})
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
 	}
 }
 
-// Document handler (get, update, delete single document)
+// Document handler
 func documentHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/documents/")
 	id := strings.TrimSuffix(path, "/")
 
 	if id == "" {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Document ID is required",
-		})
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Document ID is required"})
 		return
 	}
 
@@ -224,20 +411,14 @@ func documentHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		deleteDocument(w, r, id)
 	default:
-		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{
-			Success: false,
-			Error:   "Method not allowed",
-		})
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Method not allowed"})
 	}
 }
 
-// Public handler for read-only access
+// Public handler
 func publicHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{
-			Success: false,
-			Error:   "Only GET method is allowed for public access",
-		})
+		sendJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "Only GET allowed"})
 		return
 	}
 
@@ -245,47 +426,41 @@ func publicHandler(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSuffix(path, "/")
 
 	if id == "" {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Document ID is required",
-		})
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Document ID is required"})
 		return
 	}
 
 	var doc JSONDocument
-	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
+	err := docCollection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
 	if err != nil {
-		sendJSON(w, http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Document not found",
-		})
+		sendJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: "Document not found"})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=60")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(doc.Data)
 }
 
-// List all documents
+// List documents for current user
 func listDocuments(w http.ResponseWriter, r *http.Request) {
-	cursor, err := collection.Find(ctx, bson.M{})
+	userID := getUserID(r)
+
+	filter := bson.M{}
+	if userID != "global" {
+		filter["user_id"] = userID
+	}
+
+	cursor, err := docCollection.Find(ctx, filter)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to list documents: %v", err),
-		})
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to list documents"})
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var docs []JSONDocument
 	if err := cursor.All(ctx, &docs); err != nil {
-		sendJSON(w, http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to decode documents: %v", err),
-		})
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to decode documents"})
 		return
 	}
 
@@ -293,42 +468,26 @@ func listDocuments(w http.ResponseWriter, r *http.Request) {
 		docs = []JSONDocument{}
 	}
 
-	sendJSON(w, http.StatusOK, APIResponse{
-		Success: true,
-		Data:    docs,
-	})
+	sendJSON(w, http.StatusOK, APIResponse{Success: true, Data: docs})
 }
 
-// Create a new document
+// Create document
 func createDocument(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Failed to read request body",
-		})
-		return
-	}
-	defer r.Body.Close()
+	userID := getUserID(r)
 
 	var input struct {
 		Name string                 `json:"name"`
 		Data map[string]interface{} `json:"data"`
 	}
 
+	body, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(body, &input); err != nil {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Invalid JSON format",
-		})
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Invalid JSON"})
 		return
 	}
 
 	if input.Name == "" {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Document name is required",
-		})
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Document name is required"})
 		return
 	}
 
@@ -338,18 +497,16 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 
 	doc := JSONDocument{
 		ID:        uuid.New().String(),
+		UserID:    userID,
 		Name:      input.Name,
 		Data:      input.Data,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	_, err = collection.InsertOne(ctx, doc)
+	_, err := docCollection.InsertOne(ctx, doc)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to save document: %v", err),
-		})
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to save document"})
 		return
 	}
 
@@ -360,65 +517,53 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Get a single document
+// Get document
 func getDocument(w http.ResponseWriter, r *http.Request, id string) {
+	userID := getUserID(r)
+
+	filter := bson.M{"_id": id}
+	if userID != "global" {
+		filter["user_id"] = userID
+	}
+
 	var doc JSONDocument
-	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
+	err := docCollection.FindOne(ctx, filter).Decode(&doc)
 	if err != nil {
-		sendJSON(w, http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Document not found",
-		})
+		sendJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: "Document not found"})
 		return
 	}
 
-	sendJSON(w, http.StatusOK, APIResponse{
-		Success: true,
-		Data:    doc,
-	})
+	sendJSON(w, http.StatusOK, APIResponse{Success: true, Data: doc})
 }
 
-// Update a document
+// Update document
 func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
-	var existingDoc JSONDocument
-	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&existingDoc)
-	if err != nil {
-		sendJSON(w, http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Document not found",
-		})
-		return
+	userID := getUserID(r)
+
+	filter := bson.M{"_id": id}
+	if userID != "global" {
+		filter["user_id"] = userID
 	}
 
-	body, err := io.ReadAll(r.Body)
+	var existingDoc JSONDocument
+	err := docCollection.FindOne(ctx, filter).Decode(&existingDoc)
 	if err != nil {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Failed to read request body",
-		})
+		sendJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: "Document not found"})
 		return
 	}
-	defer r.Body.Close()
 
 	var input struct {
 		Name string                 `json:"name"`
 		Data map[string]interface{} `json:"data"`
 	}
 
+	body, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(body, &input); err != nil {
-		sendJSON(w, http.StatusBadRequest, APIResponse{
-			Success: false,
-			Error:   "Invalid JSON format",
-		})
+		sendJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "Invalid JSON"})
 		return
 	}
 
-	update := bson.M{
-		"$set": bson.M{
-			"updated_at": time.Now().UTC(),
-		},
-	}
-
+	update := bson.M{"$set": bson.M{"updated_at": time.Now().UTC()}}
 	if input.Name != "" {
 		update["$set"].(bson.M)["name"] = input.Name
 		existingDoc.Name = input.Name
@@ -428,42 +573,34 @@ func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
 		existingDoc.Data = input.Data
 	}
 
-	_, err = collection.UpdateOne(ctx, bson.M{"_id": id}, update)
+	_, err = docCollection.UpdateOne(ctx, filter, update)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, APIResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to update document: %v", err),
-		})
+		sendJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "Failed to update"})
 		return
 	}
 
 	existingDoc.UpdatedAt = time.Now().UTC()
-
-	sendJSON(w, http.StatusOK, APIResponse{
-		Success: true,
-		Message: "Document updated successfully",
-		Data:    existingDoc,
-	})
+	sendJSON(w, http.StatusOK, APIResponse{Success: true, Message: "Document updated", Data: existingDoc})
 }
 
-// Delete a document
+// Delete document
 func deleteDocument(w http.ResponseWriter, r *http.Request, id string) {
-	result, err := collection.DeleteOne(ctx, bson.M{"_id": id})
+	userID := getUserID(r)
+
+	filter := bson.M{"_id": id}
+	if userID != "global" {
+		filter["user_id"] = userID
+	}
+
+	result, err := docCollection.DeleteOne(ctx, filter)
 	if err != nil || result.DeletedCount == 0 {
-		sendJSON(w, http.StatusNotFound, APIResponse{
-			Success: false,
-			Error:   "Document not found",
-		})
+		sendJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: "Document not found"})
 		return
 	}
 
-	sendJSON(w, http.StatusOK, APIResponse{
-		Success: true,
-		Message: "Document deleted successfully",
-	})
+	sendJSON(w, http.StatusOK, APIResponse{Success: true, Message: "Document deleted"})
 }
 
-// Helper function to send JSON response
 func sendJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

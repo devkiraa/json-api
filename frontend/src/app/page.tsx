@@ -15,7 +15,11 @@ const DEFAULT_API_URL = "https://json-api-5wyk.onrender.com";
 export default function Home() {
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [apiKey, setApiKey] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "apikey">("login");
   const [isConnected, setIsConnected] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
@@ -26,20 +30,15 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: string } | null>(null);
 
-  const generateApiKey = () => {
-    const key = crypto.randomUUID().replace(/-/g, "");
-    setApiKey(key);
-    navigator.clipboard.writeText(key);
-    showNotification("API key generated and copied!", "success");
-  };
-
   useEffect(() => {
     const savedUrl = localStorage.getItem("apiUrl");
     const savedKey = localStorage.getItem("apiKey");
+    const savedEmail = localStorage.getItem("userEmail");
     if (savedUrl && savedKey) {
       setApiUrl(savedUrl);
       setApiKey(savedKey);
-      connectToApi(savedUrl, savedKey);
+      if (savedEmail) setUserEmail(savedEmail);
+      connectWithApiKey(savedUrl, savedKey);
     }
   }, []);
 
@@ -48,11 +47,13 @@ export default function Home() {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const connectToApi = async (url: string, key: string) => {
+  const connectWithApiKey = async (url: string, key: string) => {
     setLoading(true);
     try {
       const cleanUrl = url.replace(/\/$/, "");
-      const res = await fetch(`${cleanUrl}/health`);
+      const res = await fetch(`${cleanUrl}/api/documents`, {
+        headers: { "X-API-Key": key },
+      });
       if (!res.ok) throw new Error("Connection failed");
 
       localStorage.setItem("apiUrl", cleanUrl);
@@ -60,13 +61,77 @@ export default function Home() {
       setApiUrl(cleanUrl);
       setApiKey(key);
       setIsConnected(true);
-      await loadDocuments(cleanUrl, key);
+      const data = await res.json();
+      setDocuments(data.data || []);
       showNotification("Connected successfully", "success");
     } catch {
-      showNotification("Failed to connect", "error");
+      showNotification("Invalid API key", "error");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const cleanUrl = apiUrl.replace(/\/$/, "");
+      const res = await fetch(`${cleanUrl}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Login failed");
+
+      localStorage.setItem("apiUrl", cleanUrl);
+      localStorage.setItem("apiKey", data.data.api_key);
+      localStorage.setItem("userEmail", data.data.email);
+      setApiUrl(cleanUrl);
+      setApiKey(data.data.api_key);
+      setUserEmail(data.data.email);
+      setIsConnected(true);
+      await loadDocuments(cleanUrl, data.data.api_key);
+      showNotification("Login successful", "success");
+    } catch (err) {
+      showNotification(err instanceof Error ? err.message : "Login failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const cleanUrl = apiUrl.replace(/\/$/, "");
+      const res = await fetch(`${cleanUrl}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Registration failed");
+
+      localStorage.setItem("apiUrl", cleanUrl);
+      localStorage.setItem("apiKey", data.data.api_key);
+      localStorage.setItem("userEmail", data.data.email);
+      setApiUrl(cleanUrl);
+      setApiKey(data.data.api_key);
+      setUserEmail(data.data.email);
+      setIsConnected(true);
+      setDocuments([]);
+      showNotification("Account created! Your API key: " + data.data.api_key, "success");
+    } catch (err) {
+      showNotification(err instanceof Error ? err.message : "Registration failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApiKeyConnect = (e: React.FormEvent) => {
+    e.preventDefault();
+    connectWithApiKey(apiUrl, apiKey);
   };
 
   const loadDocuments = async (url?: string, key?: string) => {
@@ -86,18 +151,17 @@ export default function Home() {
     }
   };
 
-  const handleConnect = (e: React.FormEvent) => {
-    e.preventDefault();
-    connectToApi(apiUrl, apiKey);
-  };
-
   const disconnect = () => {
     localStorage.removeItem("apiUrl");
     localStorage.removeItem("apiKey");
+    localStorage.removeItem("userEmail");
     setIsConnected(false);
     setDocuments([]);
-    setApiUrl("");
+    setApiUrl(DEFAULT_API_URL);
     setApiKey("");
+    setUserEmail("");
+    setEmail("");
+    setPassword("");
   };
 
   const openCreateModal = () => {
@@ -174,51 +238,115 @@ export default function Home() {
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
             <h1 className="text-2xl font-semibold text-gray-900 mb-2">JSON API</h1>
-            <p className="text-gray-500">Connect to your API to manage documents</p>
+            <p className="text-gray-500">Store and manage your JSON data</p>
           </div>
-          <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-            <form onSubmit={handleConnect} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">API URL</label>
-                <input
-                  type="url"
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder="https://your-api.onrender.com"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  required
-                />
-                <p className="text-xs text-gray-400 mt-1">Default: Render backend</p>
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-sm font-medium text-gray-700">API Key</label>
-                  <button
-                    type="button"
-                    onClick={generateApiKey}
-                    className="text-xs text-emerald-600 hover:text-emerald-700"
-                  >
-                    Generate New Key
-                  </button>
-                </div>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Your API key"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  required
-                />
-                <p className="text-xs text-gray-400 mt-1">Click generate to create a new key</p>
-              </div>
+          <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            {/* Auth Tabs */}
+            <div className="flex border-b border-gray-200">
               <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors disabled:opacity-50"
+                onClick={() => setAuthMode("login")}
+                className={`flex-1 py-3 text-sm font-medium ${authMode === "login" ? "text-emerald-600 border-b-2 border-emerald-600" : "text-gray-500"}`}
               >
-                {loading ? "Connecting..." : "Connect"}
+                Login
               </button>
-            </form>
+              <button
+                onClick={() => setAuthMode("register")}
+                className={`flex-1 py-3 text-sm font-medium ${authMode === "register" ? "text-emerald-600 border-b-2 border-emerald-600" : "text-gray-500"}`}
+              >
+                Register
+              </button>
+              <button
+                onClick={() => setAuthMode("apikey")}
+                className={`flex-1 py-3 text-sm font-medium ${authMode === "apikey" ? "text-emerald-600 border-b-2 border-emerald-600" : "text-gray-500"}`}
+              >
+                API Key
+              </button>
+            </div>
+
+            <div className="p-6">
+              {/* Email Auth (Login/Register) */}
+              {(authMode === "login" || authMode === "register") && (
+                <form onSubmit={authMode === "login" ? handleLogin : handleRegister} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">API URL</label>
+                    <input
+                      type="url"
+                      value={apiUrl}
+                      onChange={(e) => setApiUrl(e.target.value)}
+                      placeholder="https://your-api.onrender.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={authMode === "register" ? "Min 6 characters" : "Your password"}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      required
+                      minLength={authMode === "register" ? 6 : undefined}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors disabled:opacity-50"
+                  >
+                    {loading ? "Please wait..." : authMode === "login" ? "Login" : "Create Account"}
+                  </button>
+                </form>
+              )}
+
+              {/* API Key Auth */}
+              {authMode === "apikey" && (
+                <form onSubmit={handleApiKeyConnect} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">API URL</label>
+                    <input
+                      type="url"
+                      value={apiUrl}
+                      onChange={(e) => setApiUrl(e.target.value)}
+                      placeholder="https://your-api.onrender.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="Your API key"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      required
+                    />
+                    <p className="text-xs text-gray-400 mt-1">Get your API key after registering</p>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors disabled:opacity-50"
+                  >
+                    {loading ? "Connecting..." : "Connect"}
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -240,9 +368,10 @@ export default function Home() {
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <h1 className="text-lg font-semibold text-gray-900">JSON API</h1>
           <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-500">{apiUrl}</span>
-            <button onClick={disconnect} className="text-sm text-gray-500 hover:text-gray-700">
-              Disconnect
+            {userEmail && <span className="text-sm text-gray-700">{userEmail}</span>}
+            <span className="text-sm text-gray-400 hidden md:inline">{apiUrl}</span>
+            <button onClick={disconnect} className="text-sm text-red-500 hover:text-red-700">
+              Logout
             </button>
           </div>
         </div>

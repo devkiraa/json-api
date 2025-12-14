@@ -307,7 +307,7 @@ export default function Home() {
         {/* API Reference */}
         <div className="mt-12">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">API Reference</h3>
-          <div className="grid gap-3">
+          <div className="grid gap-3 mb-8">
             {[
               { method: "GET", path: "/api/documents", desc: "List all documents", auth: true },
               { method: "POST", path: "/api/documents", desc: "Create document", auth: true },
@@ -327,6 +327,147 @@ export default function Home() {
                 <span className="text-xs text-gray-400">{ep.auth ? "Auth required" : "Public"}</span>
               </div>
             ))}
+          </div>
+
+          {/* Code Snippets for AI/Documentation */}
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Integration Code</h3>
+          <p className="text-sm text-gray-500 mb-4">Copy these snippets to use in your website or share with AI assistants.</p>
+
+          <div className="space-y-4">
+            {/* JavaScript Fetch */}
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200">
+                <span className="text-sm font-medium text-gray-700">JavaScript (Fetch)</span>
+                <button
+                  onClick={() => copyToClipboard(`// Fetch JSON data from your API
+const response = await fetch('${apiUrl}/public/YOUR_DOCUMENT_ID');
+const data = await response.json();
+console.log(data);`, "JavaScript code")}
+                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="p-4 text-sm bg-gray-900 text-gray-100 overflow-x-auto">
+                {`// Fetch JSON data from your API
+const response = await fetch('${apiUrl}/public/YOUR_DOCUMENT_ID');
+const data = await response.json();
+console.log(data);`}
+              </pre>
+            </div>
+
+            {/* React Hook */}
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200">
+                <span className="text-sm font-medium text-gray-700">React Hook</span>
+                <button
+                  onClick={() => copyToClipboard(`// React hook to fetch JSON data
+import { useState, useEffect } from 'react';
+
+function useJsonData(documentId) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('${apiUrl}/public/' + documentId)
+      .then(res => res.json())
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, [documentId]);
+
+  return { data, loading };
+}`, "React hook code")}
+                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="p-4 text-sm bg-gray-900 text-gray-100 overflow-x-auto">
+                {`// React hook to fetch JSON data
+import { useState, useEffect } from 'react';
+
+function useJsonData(documentId) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('${apiUrl}/public/' + documentId)
+      .then(res => res.json())
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, [documentId]);
+
+  return { data, loading };
+}`}
+              </pre>
+            </div>
+
+            {/* cURL */}
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200">
+                <span className="text-sm font-medium text-gray-700">cURL (with API Key)</span>
+                <button
+                  onClick={() => copyToClipboard(`# List all documents
+curl -X GET "${apiUrl}/api/documents" \\
+  -H "X-API-Key: ${apiKey}"
+
+# Create a document
+curl -X POST "${apiUrl}/api/documents" \\
+  -H "X-API-Key: ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "my-data", "data": {"key": "value"}}'
+
+# Public access (no auth needed)
+curl "${apiUrl}/public/DOCUMENT_ID"`, "cURL commands")}
+                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="p-4 text-sm bg-gray-900 text-gray-100 overflow-x-auto">
+                {`# List all documents
+curl -X GET "${apiUrl}/api/documents" \\
+  -H "X-API-Key: ${apiKey}"
+
+# Create a document
+curl -X POST "${apiUrl}/api/documents" \\
+  -H "X-API-Key: ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "my-data", "data": {"key": "value"}}'
+
+# Public access (no auth needed)
+curl "${apiUrl}/public/DOCUMENT_ID"`}
+              </pre>
+            </div>
+
+            {/* Your Credentials */}
+            <div className="border border-emerald-200 rounded-lg overflow-hidden bg-emerald-50">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-emerald-200">
+                <span className="text-sm font-medium text-emerald-800">Your API Credentials</span>
+                <button
+                  onClick={() => copyToClipboard(`API URL: ${apiUrl}\nAPI Key: ${apiKey}`, "Credentials")}
+                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                >
+                  Copy All
+                </button>
+              </div>
+              <div className="p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">API URL:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="text-sm font-mono text-gray-800">{apiUrl}</code>
+                    <button onClick={() => copyToClipboard(apiUrl, "API URL")} className="text-xs text-emerald-600">Copy</button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">API Key:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="text-sm font-mono text-gray-800">{apiKey}</code>
+                    <button onClick={() => copyToClipboard(apiKey, "API Key")} className="text-xs text-emerald-600">Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -371,7 +512,7 @@ export default function Home() {
       {/* View Modal */}
       {isViewModalOpen && selectedDoc && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-2xl shadow-xl max-h-[90vh] overflow-auto">
+          <div className="bg-white rounded-lg w-full max-w-3xl shadow-xl max-h-[90vh] overflow-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold">{selectedDoc.name}</h3>
               <button onClick={() => setIsViewModalOpen(false)} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
@@ -382,7 +523,7 @@ export default function Home() {
                   <label className="block text-xs text-gray-500 mb-1">ID</label>
                   <div className="flex gap-2">
                     <code className="text-sm text-gray-700 bg-gray-50 px-2 py-1 rounded flex-1 truncate">{selectedDoc.id}</code>
-                    <button onClick={() => copyToClipboard(selectedDoc.id, "ID")} className="text-xs text-gray-500 hover:text-gray-700">Copy</button>
+                    <button onClick={() => copyToClipboard(selectedDoc.id, "ID")} className="text-xs text-emerald-600 hover:text-emerald-700">Copy</button>
                   </div>
                 </div>
                 <div>
@@ -390,19 +531,60 @@ export default function Home() {
                   <p className="text-sm text-gray-700">{new Date(selectedDoc.updated_at).toLocaleString()}</p>
                 </div>
               </div>
+
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Public URL</label>
                 <div className="flex gap-2">
                   <code className="text-sm text-gray-700 bg-gray-50 px-2 py-1 rounded flex-1 truncate">{apiUrl}/public/{selectedDoc.id}</code>
-                  <button onClick={() => copyToClipboard(`${apiUrl}/public/${selectedDoc.id}`, "URL")} className="text-xs text-gray-500 hover:text-gray-700">Copy</button>
+                  <button onClick={() => copyToClipboard(`${apiUrl}/public/${selectedDoc.id}`, "URL")} className="text-xs text-emerald-600 hover:text-emerald-700">Copy</button>
                 </div>
               </div>
+
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Data</label>
-                <pre className="text-sm bg-gray-50 border border-gray-200 rounded-md p-4 overflow-auto max-h-64">
+                <div className="flex justify-end mb-1">
+                  <button onClick={() => copyToClipboard(JSON.stringify(selectedDoc.data, null, 2), "JSON data")} className="text-xs text-emerald-600 hover:text-emerald-700">Copy JSON</button>
+                </div>
+                <pre className="text-sm bg-gray-50 border border-gray-200 rounded-md p-4 overflow-auto max-h-48">
                   {JSON.stringify(selectedDoc.data, null, 2)}
                 </pre>
               </div>
+
+              {/* Integration Code */}
+              <div className="border border-emerald-200 rounded-lg bg-emerald-50">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-emerald-200">
+                  <span className="text-sm font-medium text-emerald-800">Use in your website</span>
+                  <button
+                    onClick={() => copyToClipboard(`// Fetch ${selectedDoc.name} data
+const response = await fetch('${apiUrl}/public/${selectedDoc.id}');
+const data = await response.json();
+console.log(data);
+
+// Your API credentials (for authenticated requests)
+// API URL: ${apiUrl}
+// API Key: ${apiKey}`, "Integration code")}
+                    className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                  >
+                    Copy Code
+                  </button>
+                </div>
+                <pre className="p-4 text-sm overflow-x-auto text-gray-800">
+                  {`// Fetch ${selectedDoc.name} data
+const response = await fetch('${apiUrl}/public/${selectedDoc.id}');
+const data = await response.json();
+console.log(data);`}
+                </pre>
+                <div className="px-4 pb-4 pt-2 border-t border-emerald-200 space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-600">API Key:</span>
+                    <div className="flex items-center gap-2">
+                      <code className="font-mono text-gray-800 text-xs">{apiKey}</code>
+                      <button onClick={() => copyToClipboard(apiKey, "API Key")} className="text-xs text-emerald-600">Copy</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex justify-between pt-2">
                 <button onClick={deleteDocument} className="text-red-600 hover:text-red-700 text-sm">Delete</button>
                 <button onClick={() => openEditModal(selectedDoc)} className="bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-2 px-4 rounded-md text-sm">Edit</button>

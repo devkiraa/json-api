@@ -1,41 +1,38 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Configuration
 type Config struct {
-	Port       string
-	APIKey     string
-	DataDir    string
+	Port           string
+	APIKey         string
+	MongoURI       string
+	DatabaseName   string
 	AllowedOrigins []string
-}
-
-// JSONStore handles all JSON data operations
-type JSONStore struct {
-	mu      sync.RWMutex
-	dataDir string
 }
 
 // JSONDocument represents a stored JSON document
 type JSONDocument struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Data      json.RawMessage `json:"data"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        string                 `json:"id" bson:"_id"`
+	Name      string                 `json:"name" bson:"name"`
+	Data      map[string]interface{} `json:"data" bson:"data"`
+	CreatedAt time.Time              `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at" bson:"updated_at"`
 }
 
 // APIResponse is a standard API response
@@ -47,16 +44,17 @@ type APIResponse struct {
 }
 
 var (
-	config Config
-	store  *JSONStore
+	config     Config
+	collection *mongo.Collection
+	ctx        = context.Background()
 )
 
 func init() {
-	// Load configuration from environment variables
 	config = Config{
-		Port:       getEnv("PORT", "8080"),
-		APIKey:     getEnv("API_KEY", "your-secret-api-key-change-me"),
-		DataDir:    getEnv("DATA_DIR", "./data"),
+		Port:           getEnv("PORT", "8080"),
+		APIKey:         getEnv("API_KEY", "your-secret-api-key-change-me"),
+		MongoURI:       getEnv("MONGODB_URI", "mongodb://localhost:27017"),
+		DatabaseName:   getEnv("DATABASE_NAME", "jsonapi"),
 		AllowedOrigins: strings.Split(getEnv("ALLOWED_ORIGINS", "*"), ","),
 	}
 }
@@ -69,8 +67,28 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
-	// Initialize the JSON store
-	store = NewJSONStore(config.DataDir)
+	// Connect to MongoDB
+	clientOptions := options.Client().ApplyURI(config.MongoURI)
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
+	defer client.Disconnect(ctx)
+
+	// Ping MongoDB
+	if err := client.Ping(ctx, nil); err != nil {
+		log.Fatalf("Failed to ping MongoDB: %v", err)
+	}
+	log.Println("Connected to MongoDB")
+
+	// Get collection
+	collection = client.Database(config.DatabaseName).Collection("documents")
+
+	// Create index on name field
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: "name", Value: 1}},
+	}
+	collection.Indexes().CreateOne(ctx, indexModel)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -82,7 +100,7 @@ func main() {
 	mux.HandleFunc("/api/documents", authMiddleware(documentsHandler))
 	mux.HandleFunc("/api/documents/", authMiddleware(documentHandler))
 
-	// Public read endpoint (for websites to consume)
+	// Public read endpoint
 	mux.HandleFunc("/public/", publicHandler)
 
 	// Wrap with CORS middleware
@@ -90,9 +108,8 @@ func main() {
 
 	// Start server
 	addr := fmt.Sprintf(":%s", config.Port)
-	log.Printf("🚀 JSON API Server starting on port %s", config.Port)
-	log.Printf("📁 Data directory: %s", config.DataDir)
-	log.Printf("🔑 API Key configured: %s***", config.APIKey[:min(8, len(config.APIKey))])
+	log.Printf("JSON API Server starting on port %s", config.Port)
+	log.Printf("API Key configured: %s***", config.APIKey[:min(8, len(config.APIKey))])
 
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
@@ -106,24 +123,11 @@ func min(a, b int) int {
 	return b
 }
 
-// NewJSONStore creates a new JSON store
-func NewJSONStore(dataDir string) *JSONStore {
-	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
-	}
-
-	return &JSONStore{
-		dataDir: dataDir,
-	}
-}
-
 // CORS middleware
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		
-		// Check if origin is allowed
+
 		allowed := false
 		for _, allowedOrigin := range config.AllowedOrigins {
 			if allowedOrigin == "*" || allowedOrigin == origin {
@@ -178,6 +182,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		Message: "JSON API Server is running",
 		Data: map[string]interface{}{
 			"version":   "1.0.0",
+			"storage":   "mongodb",
 			"timestamp": time.Now().UTC(),
 		},
 	})
@@ -200,7 +205,6 @@ func documentsHandler(w http.ResponseWriter, r *http.Request) {
 
 // Document handler (get, update, delete single document)
 func documentHandler(w http.ResponseWriter, r *http.Request) {
-	// Extract document ID from URL
 	path := strings.TrimPrefix(r.URL.Path, "/api/documents/")
 	id := strings.TrimSuffix(path, "/")
 
@@ -237,7 +241,6 @@ func publicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract document ID from URL
 	path := strings.TrimPrefix(r.URL.Path, "/public/")
 	id := strings.TrimSuffix(path, "/")
 
@@ -249,7 +252,8 @@ func publicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := store.Get(id)
+	var doc JSONDocument
+	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
 	if err != nil {
 		sendJSON(w, http.StatusNotFound, APIResponse{
 			Success: false,
@@ -258,22 +262,35 @@ func publicHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return just the data for public access
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.WriteHeader(http.StatusOK)
-	w.Write(doc.Data)
+	json.NewEncoder(w).Encode(doc.Data)
 }
 
 // List all documents
 func listDocuments(w http.ResponseWriter, r *http.Request) {
-	docs, err := store.List()
+	cursor, err := collection.Find(ctx, bson.M{})
 	if err != nil {
 		sendJSON(w, http.StatusInternalServerError, APIResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to list documents: %v", err),
 		})
 		return
+	}
+	defer cursor.Close(ctx)
+
+	var docs []JSONDocument
+	if err := cursor.All(ctx, &docs); err != nil {
+		sendJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to decode documents: %v", err),
+		})
+		return
+	}
+
+	if docs == nil {
+		docs = []JSONDocument{}
 	}
 
 	sendJSON(w, http.StatusOK, APIResponse{
@@ -295,8 +312,8 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var input struct {
-		Name string          `json:"name"`
-		Data json.RawMessage `json:"data"`
+		Name string                 `json:"name"`
+		Data map[string]interface{} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &input); err != nil {
@@ -315,11 +332,11 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(input.Data) == 0 {
-		input.Data = json.RawMessage("{}")
+	if input.Data == nil {
+		input.Data = make(map[string]interface{})
 	}
 
-	doc := &JSONDocument{
+	doc := JSONDocument{
 		ID:        uuid.New().String(),
 		Name:      input.Name,
 		Data:      input.Data,
@@ -327,7 +344,8 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	if err := store.Save(doc); err != nil {
+	_, err = collection.InsertOne(ctx, doc)
+	if err != nil {
 		sendJSON(w, http.StatusInternalServerError, APIResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to save document: %v", err),
@@ -344,7 +362,8 @@ func createDocument(w http.ResponseWriter, r *http.Request) {
 
 // Get a single document
 func getDocument(w http.ResponseWriter, r *http.Request, id string) {
-	doc, err := store.Get(id)
+	var doc JSONDocument
+	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
 	if err != nil {
 		sendJSON(w, http.StatusNotFound, APIResponse{
 			Success: false,
@@ -361,7 +380,8 @@ func getDocument(w http.ResponseWriter, r *http.Request, id string) {
 
 // Update a document
 func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
-	doc, err := store.Get(id)
+	var existingDoc JSONDocument
+	err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&existingDoc)
 	if err != nil {
 		sendJSON(w, http.StatusNotFound, APIResponse{
 			Success: false,
@@ -381,8 +401,8 @@ func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
 	defer r.Body.Close()
 
 	var input struct {
-		Name string          `json:"name"`
-		Data json.RawMessage `json:"data"`
+		Name string                 `json:"name"`
+		Data map[string]interface{} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &input); err != nil {
@@ -393,15 +413,23 @@ func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	if input.Name != "" {
-		doc.Name = input.Name
+	update := bson.M{
+		"$set": bson.M{
+			"updated_at": time.Now().UTC(),
+		},
 	}
-	if len(input.Data) > 0 {
-		doc.Data = input.Data
-	}
-	doc.UpdatedAt = time.Now().UTC()
 
-	if err := store.Save(doc); err != nil {
+	if input.Name != "" {
+		update["$set"].(bson.M)["name"] = input.Name
+		existingDoc.Name = input.Name
+	}
+	if input.Data != nil {
+		update["$set"].(bson.M)["data"] = input.Data
+		existingDoc.Data = input.Data
+	}
+
+	_, err = collection.UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
 		sendJSON(w, http.StatusInternalServerError, APIResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to update document: %v", err),
@@ -409,16 +437,19 @@ func updateDocument(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
+	existingDoc.UpdatedAt = time.Now().UTC()
+
 	sendJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Document updated successfully",
-		Data:    doc,
+		Data:    existingDoc,
 	})
 }
 
 // Delete a document
 func deleteDocument(w http.ResponseWriter, r *http.Request, id string) {
-	if err := store.Delete(id); err != nil {
+	result, err := collection.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil || result.DeletedCount == 0 {
 		sendJSON(w, http.StatusNotFound, APIResponse{
 			Success: false,
 			Error:   "Document not found",
@@ -430,72 +461,6 @@ func deleteDocument(w http.ResponseWriter, r *http.Request, id string) {
 		Success: true,
 		Message: "Document deleted successfully",
 	})
-}
-
-// Store methods
-func (s *JSONStore) Save(doc *JSONDocument) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	filename := filepath.Join(s.dataDir, doc.ID+".json")
-	data, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(filename, data, 0644)
-}
-
-func (s *JSONStore) Get(id string) (*JSONDocument, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	filename := filepath.Join(s.dataDir, id+".json")
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	var doc JSONDocument
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-
-	return &doc, nil
-}
-
-func (s *JSONStore) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	filename := filepath.Join(s.dataDir, id+".json")
-	return os.Remove(filename)
-}
-
-func (s *JSONStore) List() ([]*JSONDocument, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	files, err := os.ReadDir(s.dataDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var docs []*JSONDocument
-	for _, file := range files {
-		if filepath.Ext(file.Name()) != ".json" {
-			continue
-		}
-
-		id := strings.TrimSuffix(file.Name(), ".json")
-		doc, err := s.Get(id)
-		if err != nil {
-			continue
-		}
-		docs = append(docs, doc)
-	}
-
-	return docs, nil
 }
 
 // Helper function to send JSON response

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: json-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: API_KEY
+        generateValue: true
+      - key: DATA_DIR
+        value: /app/data
+      - key: ALLOWED_ORIGINS
+        value: "*"
+    disk:
+      name: json-data
+      mountPath: /app/data
+      sizeGB: 1

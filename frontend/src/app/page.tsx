@@ -10,8 +10,10 @@ interface Document {
   updated_at: string;
 }
 
+const DEFAULT_API_URL = "https://json-api-5wyk.onrender.com";
+
 export default function Home() {
-  const [apiUrl, setApiUrl] = useState("");
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [apiKey, setApiKey] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -23,6 +25,13 @@ export default function Home() {
   const [docData, setDocData] = useState("{}");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: string } | null>(null);
+
+  const generateApiKey = () => {
+    const key = crypto.randomUUID().replace(/-/g, "");
+    setApiKey(key);
+    navigator.clipboard.writeText(key);
+    showNotification("API key generated and copied!", "success");
+  };
 
   useEffect(() => {
     const savedUrl = localStorage.getItem("apiUrl");
@@ -179,9 +188,19 @@ export default function Home() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                   required
                 />
+                <p className="text-xs text-gray-400 mt-1">Default: Render backend</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">API Key</label>
+                  <button
+                    type="button"
+                    onClick={generateApiKey}
+                    className="text-xs text-emerald-600 hover:text-emerald-700"
+                  >
+                    Generate New Key
+                  </button>
+                </div>
                 <input
                   type="password"
                   value={apiKey}
@@ -190,6 +209,7 @@ export default function Home() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                   required
                 />
+                <p className="text-xs text-gray-400 mt-1">Click generate to create a new key</p>
               </div>
               <button
                 type="submit"
@@ -298,9 +318,9 @@ export default function Home() {
             ].map((ep, i) => (
               <div key={i} className="flex items-center gap-4 p-3 border border-gray-200 rounded-md">
                 <span className={`text-xs font-mono font-medium px-2 py-1 rounded ${ep.method === "GET" ? "bg-emerald-50 text-emerald-700" :
-                    ep.method === "POST" ? "bg-blue-50 text-blue-700" :
-                      ep.method === "PUT" ? "bg-amber-50 text-amber-700" :
-                        "bg-red-50 text-red-700"
+                  ep.method === "POST" ? "bg-blue-50 text-blue-700" :
+                    ep.method === "PUT" ? "bg-amber-50 text-amber-700" :
+                      "bg-red-50 text-red-700"
                   }`}>{ep.method}</span>
                 <code className="text-sm text-gray-700 flex-1">{ep.path}</code>
                 <span className="text-sm text-gray-500">{ep.desc}</span>
